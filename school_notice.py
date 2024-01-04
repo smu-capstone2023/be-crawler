@@ -57,9 +57,9 @@ def getSchoolNotice():
             NOW_VIEWS = i.dd.ul.find_all('li')[3].text.replace("\t", "").replace("\r", "").replace("\n", "").replace("조회수", "")
             noticeResultList.append({
                 "title": NOW_TITLE,
-                "index": NOW_INDEX,
-                "date": SERVER_TIME,
-                "views": NOW_VIEWS
+                "postId": int(NOW_INDEX),
+                "createdTime": SERVER_TIME,
+                "views": int(NOW_VIEWS)
             })
         
         noticeTable.drop()
