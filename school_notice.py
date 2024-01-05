@@ -34,9 +34,9 @@ def sendMessageToSlack(message):
 
 def getSchoolNotice(): 
     try: 
-        client = MongoClient("mongodb://admin:capstone@localhost:27017/")
-        noticeDB = client["school_notice"]
-        noticeTable = noticeDB["seoul_new_100"]
+        client = MongoClient(os.getenv('MONGODB_ADDRESS'))
+        noticeDB = client["smus"]
+        noticeTable = noticeDB["school_notice"]
 
         campus = "smu" #천안캠은 smuc
         page = requests.get(f'https://www.smu.ac.kr/kor/life/notice.do?srUpperNoticeYn=on&srCampus={campus}&article.offset=0&articleLimit=100')
