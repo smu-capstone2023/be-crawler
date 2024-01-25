@@ -8,7 +8,7 @@
 # pip3 install python-dotenv
 # pip3 install pytz
 
-# DB - database name: school_notice
+# DB - database name: smus
 # DB - collection name: bus_notice
 # DB - OCR collection name: ocr_history
 
@@ -201,8 +201,8 @@ def getNumberSet(urlTable, url):
 
 def getBusNotice(): 
     try:
-        client = MongoClient("mongodb://admin:capstone@localhost:27017/")
-        noticeDB = client["school_notice"]
+        client = MongoClient(os.getenv('MONGODB_ADDRESS'))
+        noticeDB = client["smus"]
         noticeTable = noticeDB["bus_notice"]
         ocrHistoryTable = noticeDB["ocr_history"]
         

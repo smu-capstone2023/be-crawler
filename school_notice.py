@@ -6,8 +6,8 @@
 # pip3 install schedule
 # pip3 install pytz
 
-# DB - database name: school_notice
-# DB - collection name: seoul_new_100
+# DB - database name: smus
+# DB - collection name: school_notice
 
 import requests
 from bs4 import BeautifulSoup as bs
