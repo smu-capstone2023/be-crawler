@@ -6,8 +6,8 @@
 # pip3 install schedule
 # pip3 install pytz
 
-# DB - database name: school_notice
-# DB - collection name: seoul_new_100
+# DB - database name: smus
+# DB - collection name: school_notice
 
 import requests
 from bs4 import BeautifulSoup as bs
@@ -34,9 +34,9 @@ def sendMessageToSlack(message):
 
 def getSchoolNotice(): 
     try: 
-        client = MongoClient("mongodb://admin:capstone@localhost:27017/")
-        noticeDB = client["school_notice"]
-        noticeTable = noticeDB["seoul_new_100"]
+        client = MongoClient(os.getenv('MONGODB_ADDRESS'))
+        noticeDB = client["smus"]
+        noticeTable = noticeDB["school_notice"]
 
         campus = "smu" #천안캠은 smuc
         page = requests.get(f'https://www.smu.ac.kr/kor/life/notice.do?srUpperNoticeYn=on&srCampus={campus}&article.offset=0&articleLimit=100')
@@ -57,9 +57,9 @@ def getSchoolNotice():
             NOW_VIEWS = i.dd.ul.find_all('li')[3].text.replace("\t", "").replace("\r", "").replace("\n", "").replace("조회수", "")
             noticeResultList.append({
                 "title": NOW_TITLE,
-                "index": NOW_INDEX,
-                "date": SERVER_TIME,
-                "views": NOW_VIEWS
+                "postId": int(NOW_INDEX),
+                "createdTime": SERVER_TIME,
+                "views": int(NOW_VIEWS)
             })
         
         noticeTable.drop()
