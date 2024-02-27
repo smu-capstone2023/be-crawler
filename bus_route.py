@@ -4,13 +4,11 @@
 # pip3 install requests
 # pip3 install pymongo
 # pip3 install schedule
-# pip3 install google-cloud-vision
 # pip3 install python-dotenv
 # pip3 install pytz
 
 # DB - database name: smus
-# DB - collection name: bus_notice
-# DB - OCR collection name: ocr_history
+# DB - collection name: bus_route
 
 import os
 from dotenv import load_dotenv
@@ -71,6 +69,7 @@ def getNormalErrorMessage(error):
     }
     return json.dumps(errorMessage, ensure_ascii = False, indent=2)
 
+# 우회 정류장 데이터의 MD5값 계산 -> 데이터 변화 여부 확인 위함.
 def getMD5(value):
     return hashlib.md5(str(value).encode()).hexdigest()
 
@@ -121,6 +120,7 @@ def getAllBypassStops():
         allBypassStops.append(getBusBypassStops(bus["busId"], bus["busName"]))
     return allBypassStops
 
+# 크롤링 함수
 def getBusRoute(): 
     try:
         client = MongoClient(os.getenv('MONGODB_ADDRESS'))
