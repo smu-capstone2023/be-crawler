@@ -14,6 +14,7 @@
 
 import os
 from dotenv import load_dotenv
+import hashlib # calc MD5
 
 # crawling
 import requests
@@ -61,14 +62,17 @@ def getNormalErrorMessage(error):
         "error": str(error)
     }
     errorMessage = {
+        "File": "Bus_Route_Crawling", 
         "Level": "error",
         "ErrorHost":"BUS Crawling GCP",
         "Time": str(datetime.now(pytz.timezone('Asia/Seoul'))), #2023-10-20 13:00:32.447078+09:00
-        "WarningMessage": "예상치 못한 에라가 발생해 이번 크롤링이 실패했습니다. ",
+        "Message": "버스 우회 크롤러에서 예상치 못한 에라가 발생해 이번 크롤링이 실패했습니다. ",
         "data": issueData
     }
-    
-    return json.dumps(errorMessage, ensure_ascii = False)
+    return json.dumps(errorMessage, ensure_ascii = False, indent=2)
+
+def getMD5(value):
+    return hashlib.md5(str(value).encode()).hexdigest()
 
 # 특정 노선 모든 정류장 도착 정보 api 받기
 def requestBusStopsApiByRoute(busId):
@@ -86,40 +90,36 @@ def parseBusStopXml(xmlString):
     busStops = parsedXml.iter(tag="itemList")
     bypassStops = []
     for stop in busStops:
+        # 우회 여부 -> deTourAt: 00==정상;11==우회
         if stop.find("deTourAt").text == "11":
             bypassStop = {}
             # 정류장 이름 -> "stNm"
             bypassStop["stopName"] = stop.find("stNm").text
             # 정류장 id -> "arsId"
             bypassStop["stopId"] = stop.find("arsId").text
-            # 우회 여부 -> deTourAt: 00==정상;11==우회
-            bypassStop["stopBypass"] = True if stop.find("deTourAt").text == "11" else False
-            # 버스 노선 고유ID(버스 노선 번호 아님 주의) -> "busRouteId"
-            bypassStop["busId"] = stop.find("busRouteId").text
-            # 버스 노선 번호(버스 고유ID 아님) -> "busRouteAbrv"
-            bypassStop["busName"] = stop.find("busRouteAbrv").text
             # 방향 -> ???
-            
-            
             
             bypassStops.append(bypassStop)
     return bypassStops
 
 # 버스 고유id로 우회 정류장 리스트 반환
-def getBypassStopsByBusId(busId):
+def getBusBypassStops(busId, busName):
     xmlString = requestBusStopsApiByRoute(busId)
-    return parseBusStopXml(xmlString)
+    bypassStops = parseBusStopXml(xmlString)
+    return {
+        "busName": busName,
+        "busId": busId,
+        "stops": bypassStops,
+        "stopsMD5": getMD5(bypassStops),
+        "updatedAt": datetime.now(pytz.timezone('Asia/Seoul')), #2023-10-20 13:00:32.447078+09:00
+    }
 
 # 모든 노선의 우회 정류장 리스트 반환
 def getAllBypassStops():
     allBypassStops = []
-    for i in BUS_LIST:
-        allBypassStops = allBypassStops + getBypassStopsByBusId(i["busId"])
+    for bus in BUS_LIST:
+        allBypassStops.append(getBusBypassStops(bus["busId"], bus["busName"]))
     return allBypassStops
-
-result = getAllBypassStops()
-for i in result:
-    print(i)
 
 def getBusRoute(): 
     try:
@@ -128,15 +128,15 @@ def getBusRoute():
         routeTable = noticeDB["bus_route"]
         
         allBusBypassStops = getAllBypassStops()
-        print(allBusBypassStops)
+        print(len(allBusBypassStops))
 
-        # routeTable.drop()
-        # for i in allBusBypassStops:
-        #     allBusBypassStops.insert_one(i)
+        routeTable.drop()
+        for i in allBusBypassStops:
+            routeTable.insert_one(i)
             
     except Exception as e:
         print(e)
-        sendMessageToSlack(e)
+        sendMessageToSlack(getNormalErrorMessage(e))
         print("Crawling Failed. Time:", str(datetime.now(pytz.timezone('Asia/Seoul'))))
         
     print("Crawling Done. Time:", str(datetime.now(pytz.timezone('Asia/Seoul'))))
