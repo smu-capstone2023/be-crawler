@@ -42,6 +42,10 @@ BUS_LIST = [
     {"busName": "종로13", "busId": "100900002"}
 ]
 
+HISTORY_FILE_NAME = 'history.json'
+def getHistoryDir():
+    return os.getcwd() + "/" + HISTORY_FILE_NAME
+
 def convertTime(timeString):
     return datetime.strptime(timeString, "%Y-%m-%d %H:%M:%S")
 
@@ -68,6 +72,55 @@ def getNormalErrorMessage(error):
         "data": issueData
     }
     return json.dumps(errorMessage, ensure_ascii = False, indent=2)
+
+# history파일 읽기 함수 -> "버스노선이름":"최근의 md5정보"인 dict 반환
+def readHistoryFileToDict():
+    if not os.path.exists(getHistoryDir()):
+        f = open(getHistoryDir(), 'w')
+        f.close()
+        return {}
+    busMd5Dict = {}
+    f = open(getHistoryDir(), 'r')
+    busMd5StringList = f.readlines()
+    for busMd5String in busMd5StringList:
+        busData = busMd5String[:-1].split(":")
+        busMd5Dict[busData[0]] = busData[1]
+    return busMd5Dict
+
+# history파일 쓰기 함수 -> dict 정보를 "버스노선이름":"최근의 md5정보"로 쓰기
+def writeDictToHistoryFile(md5Dict):
+    fileString = ''
+    for k, v in md5Dict.items():
+        fileString+= k + ":" + v + "\n"
+
+    f = open(getHistoryDir(), 'w')
+    f.write(fileString)
+    f.close()
+
+# 현재 노선 및 md5 정보를 넘길 때 기존과 비교하고, 어떤 알림을 보내야 할 지 결정하기
+def sendNotificationByNewInfomation(busName, busStops, oldMd5Dict):
+    oldMd5 = None
+    if busName in oldMd5Dict:
+        oldMd5 = oldMd5Dict[busName]
+    
+    if oldMd5 == None:
+        if len(busStops) > 0: 
+            # 우회역 새로 발생한다는 알림 보내기
+            print("우회역 새로 발생한다는 알림 보내기")
+            return
+    else:
+        if len(busStops) == 0: 
+            # 우회역 사라짐 -> 우회 종료 알림 보내기
+            print("우회역 사라짐 -> 우회 종료 알림 보내기")
+            return
+        else:
+            newMd5 = getMD5(busStops)
+            if oldMd5 != newMd5:
+                # 우회역이 기존에 비해 더 추가됐다 -> 우회역 업데이트 알림 보내기
+                print("우회역이 기존에 비해 더 추가됐다 -> 우회역 업데이트 알림 보내기")
+                return
+    print("우회 정보가 애초에 없었거나 이전 정보와 같음: 알림 불필요")
+    return
 
 # 우회 정류장 데이터의 MD5값 계산 -> 데이터 변화 여부 확인 위함.
 def getMD5(value):
@@ -101,23 +154,32 @@ def parseBusStopXml(xmlString):
             bypassStops.append(bypassStop)
     return bypassStops
 
-# 버스 고유id로 우회 정류장 리스트 반환
-def getBusBypassStops(busId, busName):
-    xmlString = requestBusStopsApiByRoute(busId)
-    bypassStops = parseBusStopXml(xmlString)
-    return {
-        "busName": busName,
-        "busId": busId,
-        "stops": bypassStops,
-        "stopsMD5": getMD5(bypassStops),
-        "updatedAt": datetime.now(pytz.timezone('Asia/Seoul')), #2023-10-20 13:00:32.447078+09:00
-    }
-
 # 모든 노선의 우회 정류장 리스트 반환
 def getAllBypassStops():
+    oldMd5Dict = readHistoryFileToDict()
+    newMd5Dict = {}
     allBypassStops = []
     for bus in BUS_LIST:
-        allBypassStops.append(getBusBypassStops(bus["busId"], bus["busName"]))
+        busId = bus["busId"]
+        busName = bus["busName"]
+        xmlString = requestBusStopsApiByRoute(busId)
+        bypassStops = parseBusStopXml(xmlString)
+        sendNotificationByNewInfomation(busName, bypassStops, oldMd5Dict)
+        
+        newMd5 = None
+        if len(bypassStops) > 0:
+            newMd5 = getMD5(bypassStops)
+            newMd5Dict[busName] = newMd5
+            
+        allBypassStops.append({
+            "busName": busName,
+            "busId": busId,
+            "stops": bypassStops,
+            "stopsMD5": newMd5,
+            "updatedAt": datetime.now(pytz.timezone('Asia/Seoul')), #2023-10-20 13:00:32.447078+09:00
+        })
+        
+    writeDictToHistoryFile(newMd5Dict)
     return allBypassStops
 
 # 크롤링 함수
@@ -126,10 +188,9 @@ def getBusRoute():
         client = MongoClient(os.getenv('MONGODB_ADDRESS'))
         noticeDB = client["smus"]
         routeTable = noticeDB["bus_route"]
-        
-        allBusBypassStops = getAllBypassStops()
-        print(len(allBusBypassStops))
 
+        allBusBypassStops = getAllBypassStops()
+        
         routeTable.drop()
         for i in allBusBypassStops:
             routeTable.insert_one(i)
