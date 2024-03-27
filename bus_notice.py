@@ -7,6 +7,7 @@
 # pip3 install google-cloud-vision
 # pip3 install python-dotenv
 # pip3 install pytz
+# pip3 install PyMuPDF
 
 # DB - database name: smus
 # DB - collection name: bus_notice
@@ -23,6 +24,9 @@ import json
 from datetime import datetime
 import pytz
 
+import fitz
+import base64
+import hashlib
 from google.cloud import vision
 import os
 from dotenv import load_dotenv
@@ -32,23 +36,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 load_dotenv()
 
-BUS_NUMBER_LIST = ["7016", "1711", "163", "서대문08", "종로13"]
+BUS_NUMBER_LIST = ["7016", "1711", "163", "서대문08", "종로13", "7016번", "1711번", "163번", "서대문08번", "종로13번"]
 BUS_NUMBER_SET = set(BUS_NUMBER_LIST)
 
 def convertTime(timeString):
     return datetime.strptime(timeString, "%Y-%m-%d %H:%M:%S")
-
-# set형을 json 배열의 문자열 형태로 반환
-def setObject2JsonArrayString(setObject):
-    newStringList = []
-    for i in setObject:
-        newStringList.append('"' + i + '"')
-    return "[" + ", ".join(newStringList) + "]"
-
-# json 배열의 문자열을 set형태로 반환
-def jsonArrayString2SetObject(jsonString):
-    listObjest = json.loads(jsonString)
-    return set(listObjest)
 
 # 슬랙으로 메시지 보내기
 def sendMessageToSlack(message):
@@ -75,9 +67,9 @@ def getNormalErrorMessage(error):
     return json.dumps(errorMessage, ensure_ascii = False)
 
 # 이미지 다운로드 재시도 경고 메시지(준비중)
-def getImageDownloadRetryMessage(imgURL, retryTimes, error):
+def getFileDownloadRetryMessage(fileUrl, retryTimes, error):
     issueData = {
-        "imageURL": imgURL,
+        "imageURL": fileUrl,
         "retryTimes": retryTimes,
         "error": str(error)
     }
@@ -85,16 +77,16 @@ def getImageDownloadRetryMessage(imgURL, retryTimes, error):
         "Level": "warning",
         "ErrorHost":"BUS Crawling GCP",
         "Time": str(datetime.now(pytz.timezone('Asia/Seoul'))), #2023-10-20 13:00:32.447078+09:00
-        "WarningMessage": "사진을 다운로드할 때 연결을 거부당해서 재시도 중입니다. 크롤러가 너무 빈번하게 작동했거나 기존 연결을 끊지 않을 가능성이 있습니다. ",
+        "WarningMessage": "파일을 다운로드할 때 연결을 거부당해서 재시도 중입니다. 크롤러가 너무 빈번하게 작동했거나 기존 연결을 끊지 않을 가능성이 있습니다. ",
         "data": issueData
     }
     
     return json.dumps(warnMessage, ensure_ascii = False)
 
 # 이미지 다운로드 실패 에러 메시지
-def getImageDownloadErrorMessage(imgURL, error):
+def getFileDownloadErrorMessage(NoticeId, error):
     issueData = {
-        "imageURL": imgURL,
+        "imageURL": NoticeId,
         "error": str(error)
     }
     errorMessage = {
@@ -104,7 +96,7 @@ def getImageDownloadErrorMessage(imgURL, error):
         "WarningMessage": "사진을 다운로드할 때 연결을 거부당해서 살패했습니다. 크롤러가 너무 빈번하게 작동했거나 기존 연결을 끊지 않을 가능성이 있습니다. ",
         "data": issueData
     }
-    return json.dumps(errorMessage, ensure_ascii = False)
+    return json.dumps(errorMessage, ensure_ascii = False, indent=2)
 
 # 이미지 OCR 실패 에러 메시지
 def getOCRErrorMessage(imagePath, error):
@@ -121,40 +113,103 @@ def getOCRErrorMessage(imagePath, error):
     }
     return json.dumps(errorMessage, ensure_ascii = False)
 
-# ocr 사진 다운로드하기
-def downloadImage(url):
-    print("Start OCR: ", url)
-    imageName = url.split("/")[-1]
-    imagePath = f"./{imageName}"
+# '우회' 라는 단어가 들어간 공지사항의 id들을 받아오기
+def getNotices():
+    baseURL = f"https://topis.seoul.go.kr/notice/selectNoticeList.do"
+    baseBody = {
+        "pageIndex": 1,
+        "recordPerPage": 10,
+        "category": "sTtl",
+        "boardSearch": "우회"
+    }
+
+    responseJsonString = requests.post(baseURL, data=baseBody, verify=False).content
+    noticeDict = json.loads(responseJsonString)
+
+    notices = []
+    for info in noticeDict["rows"]:
+        noticeId = info["bdwrSeq"]
+        createdTime = convertTime(info["createDate"])
+        updatedTime = convertTime(info['updateDate'])
+        title = info['bdwrTtlNm']
+        ContentSoup = bs(info["bdwrCts"], "html.parser")
+        ContentText = ""
+        for nowTag in ContentSoup.children:
+            if nowTag.text != "":
+                    ContentText+=nowTag.text + "\n"
+        
+        notices.append({
+            "number": noticeId,
+            "createdTime": createdTime,
+            "updatedTime": updatedTime,
+            "title": title,
+            "content": ContentText,
+        })
+    return notices
+
+# 첨부파일 다운로드하기
+def downloadFiles(noticeId):
+    noticeId = str(noticeId)
+    # 현재 noticeId으로 폴더 만들기
+    os.mkdir(f'./{noticeId}')
+    print("Download Notice File: ", noticeId)
     
+    baseURL = f"https://topis.seoul.go.kr/notice/selectNoticeFileDown.do"
+    baseBody = {
+        "bdwrSeq": noticeId
+    }
+    
+    filePaths = []
     try:
-        img_data = requests.get(url, verify=False).content
+        filesResponse = requests.post(baseURL, data=baseBody, verify=False).content
+        fileDict = json.loads(filesResponse)
+        for fileDate in fileDict["rows"]:
+            if fileDate["apndFile"] == None: continue
+            fileBytes = bytes(fileDate["apndFile"], 'utf-8')
+            fileExt = fileDate['apndFileNm'].rsplit('.', 1)[1]
+            fileName = hashlib.md5(fileBytes).hexdigest() + "." + fileExt
+            filePath = f"./{noticeId}/{fileName}"
+            with open(filePath, 'wb') as handler:
+                handler.write(base64.decodebytes(fileBytes))
+            filePaths.append(filePath)
     except Exception as e:
-        message = getImageDownloadErrorMessage(url, e)
+        message = getFileDownloadErrorMessage(noticeId, e)
         sendMessageToSlack(message)
         raise Exception(message)
-    
-    with open(imagePath, 'wb') as handler:
-        handler.write(img_data)
-        return imagePath
+    return filePaths
 
-# ocr 사진 삭제하기  
-def deleteImage(imagePath):
-    os.remove(imagePath)
+# pdf 파일을 각각의 사진으로 자르기
+def pdf2images(pdfPath):
+    pdfPath = os.path.abspath(pdfPath)
+    pdfName = os.path.basename(pdfPath).rsplit('.', 1)[0]
+    
+    folderDir = os.path.dirname(pdfPath)
+    imageFolderPath = os.path.join(folderDir, 'images')
+    if not os.path.exists(imageFolderPath):
+        os.mkdir(imageFolderPath)
+    pdfImagesFolderPath = os.path.join(imageFolderPath, pdfName)
+    os.mkdir(pdfImagesFolderPath)
+    
+    doc = fitz.open(pdfPath)
+    for i, page in enumerate(doc):
+        newImagePath = os.path.join(pdfImagesFolderPath, f"{i}.png")
+        img = page.get_pixmap()
+        img.save(newImagePath)
+    return pdfImagesFolderPath
 
 # ocr 요청하고 set으로 반환해주기
-def detect_text(path):
+def detect_text(imagePath):
     """Detects text in the file."""
     client = vision.ImageAnnotatorClient()
 
-    with open(path, "rb") as image_file:
+    with open(imagePath, "rb") as image_file:
         content = image_file.read()
 
     image = vision.Image(content=content)
 
     response = client.document_text_detection(image=image)
     if response.error.message:
-        message = getOCRErrorMessage(path, response.error.message)
+        message = getOCRErrorMessage(imagePath, response.error.message)
         raise Exception(message)
 
     texts = response.text_annotations[0].description
@@ -162,41 +217,48 @@ def detect_text(path):
     textSet = set(textsList)
     return textSet
 
-# 실제 ocr 전체 과정
-def googleOcrUrl(url):
-    imagePath = downloadImage(url)
-    resultSet = detect_text(imagePath)
-    deleteImage(imagePath)
+# pdf 파일을 ocr 인식
+def googleOcrPdf(pdfPath):
+    imagesFolder = pdf2images(pdfPath)
+    resultSet = set()
+    for root, dirs, files in os.walk(imagesFolder):
+        for imageName in files:
+            imagePath = os.path.join(root, imageName)
+            ocrResult = detect_text(imagePath)
+            resultSet = resultSet.union(ocrResult)
+            os.remove(imagePath)
+    os.rmdir(imagesFolder)
     return resultSet
 
 # db에 새로운 url 및 대응하는 set형으로 저장. TTL 추가 예정
-def saveSetResult(dbTable, url, resultSet): 
+def saveSetResult(dbTable, filePath, resultSet): 
+    fileName = os.path.basename(filePath).rsplit('.', 1)[0]
     dbTable.insert_one({
-        "url": url,
-        "bus_number": setObject2JsonArrayString(resultSet)
+        "file_name": fileName,
+        "bus_number": list(resultSet)
     })
-    
+
 # 해당 url이 db에 존재하면 set형, 없으면 None반환
-def getResultFromDB(dbTable, url):
-    dbResult = dbTable.find_one({"url": url})
-    if dbResult != None:
-        print("find History: ", url)
-        return jsonArrayString2SetObject(dbResult['bus_number'])
+def getResultFromHistoryDB(historyTable, filePath):
+    fileName = os.path.basename(filePath).rsplit('.', 1)[0]
+    history = historyTable.find_one({"file_name": fileName})
+    if history != None:
+        print("Found History: ", fileName)
+        return set(history['bus_number'])
     else: 
         return None
 
-# URL으로 OCR를 요청하고, 그 결과를 Set형 버스 번호 정보로 반환 및 DB 저장하기
-def getResultFromUrl(urlTable, url):
-    googleOcrResult = googleOcrUrl(url)
-    matchedBusNumberSet = set(googleOcrResult) & BUS_NUMBER_SET
-    saveSetResult(urlTable, url, matchedBusNumberSet)
-    return matchedBusNumberSet
+# 파일 경로로 OCR를 요청하기
+def getResultFromFile(filePath):
+    googleOcrSet = googleOcrPdf(filePath)
+    return googleOcrSet & BUS_NUMBER_SET
 
-# url를 입력하고 set형을 반환하기
-def getNumberSet(urlTable, url):
-    busResultSet = getResultFromDB(urlTable, url)
+# 파일 경로를 입력하고 set형을 반환하기
+def getNumberSet(historyTable, filePath):
+    busResultSet = getResultFromHistoryDB(historyTable, filePath)
     if busResultSet == None:
-        busResultSet = getResultFromUrl(urlTable, url)
+        busResultSet = getResultFromFile(filePath)
+        saveSetResult(historyTable, filePath, busResultSet)
     return busResultSet
 
 def getBusNotice(): 
@@ -206,66 +268,29 @@ def getBusNotice():
         noticeTable = noticeDB["bus_notice"]
         ocrHistoryTable = noticeDB["ocr_history"]
         
-        baseURL = f"https://topis.seoul.go.kr/notice/selectNoticeList.do"
-        baseBody = {
-            "pageIndex": 1,
-            "recordPerPage": 10,
-            "category": "sTtl",
-            "boardSearch": "우회"
-        }
-        
-        responseJsonString = requests.post(baseURL, data=baseBody, verify=False).content
-        noticeDict = json.loads(responseJsonString)
-        
-        newBusInfoList = []
-        for info in noticeDict["rows"]:
-            number = info["bdwrSeq"]
-            createdTime = convertTime(info["createDate"])
-            updatedTime = convertTime(info['updateDate'])
-            title = info['bdwrTtlNm']
-            
-            ContentSoup = bs(info["bdwrCts"], "html.parser")
-            ContentText = ""
-            
-            # 이미지 링크 크롤링
-            imgTags = ContentSoup.find_all("img")
-            imgUrlList = []
-            for img in imgTags:
-                nowImageUrl = 'https://' + img["src"][2:]
-                if img["src"].startswith('https://'):
-                    nowImageUrl = img['src']
-                elif img["src"].startswith('http://'):
-                    nowImageUrl = 'https://' + img["src"][7:]
-                imgUrlList.append(nowImageUrl)
-            imgUrlListString = setObject2JsonArrayString(imgUrlList)
-            
-            # 이미지 링크 OCR 돌리기
-            BUS_NUMBER_OCR_RESULT = set()
-            for imageUrl in imgUrlList:
-                resultSet = getNumberSet(ocrHistoryTable, imageUrl)
-                BUS_NUMBER_OCR_RESULT = BUS_NUMBER_OCR_RESULT | resultSet
-            busNumberOcrResultString = setObject2JsonArrayString(BUS_NUMBER_OCR_RESULT)
-            print("OCR결과: ", busNumberOcrResultString)
+        results = []
+        busNotices = getNotices()
+        for noticeInfo in busNotices:
+            noticeId = noticeInfo['number']
+            noticeFilePaths = downloadFiles(noticeId)
+            noticeResultSet = set()
+            for filePath in noticeFilePaths:
+                busNumberSet = getNumberSet(ocrHistoryTable, filePath)
+                print("busNumberSet: ", busNumberSet)
+                noticeResultSet = noticeResultSet.union(busNumberSet)
+                os.remove(filePath)
                 
-            # 게시글 상세 내용 크롤링
-            for nowTag in ContentSoup.children:
-                if nowTag.text != "":
-                        ContentText+=nowTag.text + "\n"
-                   
-            newBusInfoList.append({
-                "number": number,
-                "createdTime": createdTime,
-                "updatedTime": updatedTime,
-                "title": title,
-                "imageUrlList": imgUrlListString,
-                "content": ContentText,
-                "bus_number_list": busNumberOcrResultString
-            }) 
+            if os.path.exists(f'./{noticeId}'):
+                if os.path.exists(f'./{noticeId}/images'):
+                    os.rmdir(f'./{noticeId}/images')
+                os.rmdir(f'./{noticeId}')
+                
+            noticeInfo['bus_number'] = list(noticeResultSet)
+            results.append(noticeInfo)
             print("==========")
-        
 
         noticeTable.drop()
-        for i in newBusInfoList:
+        for i in results:
             noticeTable.insert_one(i)
             
     except Exception as e:
