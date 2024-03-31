@@ -120,8 +120,7 @@ def getNotices():
         "pageIndex": 1,
         "recordPerPage": 10,
         "category": "sTtl",
-        "boardSearch": "우회",
-        "crawlingTime": str(datetime.now(pytz.timezone('Asia/Seoul')))
+        "boardSearch": "우회"
     }
 
     responseJsonString = requests.post(baseURL, data=baseBody, verify=False).content
@@ -143,6 +142,7 @@ def getNotices():
             "number": noticeId,
             "createdTime": createdTime,
             "updatedTime": updatedTime,
+            "crawlingTime": datetime.now(pytz.timezone('Asia/Seoul')),
             "title": title,
             "content": ContentText,
         })
