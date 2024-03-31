@@ -142,6 +142,7 @@ def getNotices():
             "number": noticeId,
             "createdTime": createdTime,
             "updatedTime": updatedTime,
+            "crawlingTime": datetime.now(pytz.timezone('Asia/Seoul')),
             "title": title,
             "content": ContentText,
         })
